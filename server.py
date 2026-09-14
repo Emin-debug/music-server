@@ -31,29 +31,31 @@ EXT_TYPES = [
     ('.mp3', 'audio/mpeg'),
 ]
 
-# Deno pode estar em vários lugares. Procura e adiciona ao PATH.
-DENO_DIRS = [
-    '/opt/render/project/.deno/bin',
-    os.path.expanduser('~/.deno/bin'),
-    '/usr/local/bin',
-    '/usr/bin',
+# Onde o Deno pode estar. Procuramos em ordem.
+DENO_CANDIDATES = [
+    '/opt/render/project/.deno/bin/deno',
+    os.path.expanduser('~/.deno/bin/deno'),
+    '/usr/local/bin/deno',
+    '/usr/bin/deno',
 ]
 
 
-def build_env():
-    """Retorna env com Deno no PATH se encontrado."""
-    env = os.environ.copy()
-    for d in DENO_DIRS:
-        if os.path.exists(os.path.join(d, 'deno')):
-            log.info('deno encontrado em %s', d)
-            env['PATH'] = d + ':' + env.get('PATH', '')
-            return env
-    log.warning('deno nao encontrado no PATH')
-    return env
+def find_deno():
+    """Retorna o caminho absoluto do Deno, ou None."""
+    for path in DENO_CANDIDATES:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    which = shutil.which('deno')
+    return which
 
 
-# Clientes que funcionam sem PO Token e sem cookies.
-# web_embedded e tv sao os mais estaveis em IP de datacenter.
+DENO_PATH = find_deno()
+if DENO_PATH:
+    log.info('deno encontrado em %s', DENO_PATH)
+else:
+    log.warning('deno NAO encontrado. yt-dlp vai falhar sem runtime JS.')
+
+# Clientes que funcionam sem PO Token.
 YT_CLIENTS = 'web_embedded,tv,ios,mweb,web_safari'
 
 
@@ -106,6 +108,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         if not cache_file:
             log.info('baixando %s', video_id)
+
             cmd = [
                 'yt-dlp',
                 '-f', 'bestaudio/best',
@@ -113,10 +116,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 '--no-playlist',
                 '--no-warnings',
                 '--extractor-args', 'youtube:player_client=' + YT_CLIENTS,
-                'https://www.youtube.com/watch?v=' + video_id
             ]
+
+            # Aponta o Deno com caminho absoluto — nao depende do PATH
+            if DENO_PATH:
+                cmd.extend(['--js-runtimes', 'deno:' + DENO_PATH])
+
             if COOKIES_PATH:
                 cmd.extend(['--cookies', COOKIES_PATH])
+
+            cmd.append('https://www.youtube.com/watch?v=' + video_id)
 
             try:
                 result = subprocess.run(
@@ -124,10 +133,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     check=True,
                     timeout=300,
                     capture_output=True,
-                    text=True,
-                    env=build_env()
+                    text=True
                 )
                 log.info('baixado %s', video_id)
+                if result.stdout:
+                    log.info('yt-dlp stdout: %s', result.stdout[-300:])
             except subprocess.CalledProcessError as e:
                 err = e.stderr[-800:] if e.stderr else str(e)
                 log.error('yt-dlp falhou: %s', err)
