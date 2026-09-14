@@ -7,17 +7,20 @@ import logging
 import tempfile
 from urllib.parse import urlparse
 
+# Configuração via variáveis de ambiente (Render) ou padrão local
 HOST = os.environ.get('HOST', '0.0.0.0')
 PORT = int(os.environ.get('PORT', '8000'))
 CACHE_DIR = os.environ.get('CACHE_DIR', os.path.join(tempfile.gettempdir(), 'music_cache'))
 COOKIES_ENV = os.environ.get('COOKIES', '')
 
+# Escreve os cookies em arquivo temporário se vieram por env var
 COOKIES_PATH = None
 if COOKIES_ENV:
     COOKIES_PATH = os.path.join(tempfile.gettempdir(), 'cookies.txt')
     with open(COOKIES_PATH, 'w') as f:
         f.write(COOKIES_ENV)
 else:
+    # fallback local: arquivo cookies.txt ao lado do server.py
     local_cookies = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
     if os.path.exists(local_cookies):
         COOKIES_PATH = local_cookies
@@ -27,6 +30,7 @@ log = logging.getLogger('music')
 
 os.makedirs(CACHE_DIR, exist_ok=True)
 
+# Extensões aceitas e seus Content-Types correspondentes
 EXT_TYPES = [
     ('.m4a', 'audio/mp4'),
     ('.webm', 'audio/webm'),
@@ -65,6 +69,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         super().do_GET()
 
     def _find_cached(self, base):
+        """Procura o arquivo cacheado com qualquer extensão aceita."""
         for ext, ct in EXT_TYPES:
             candidate = base + ext
             if os.path.exists(candidate):
@@ -84,13 +89,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         if not cache_file:
             log.info('baixando %s', video_id)
+            # Força clientes menos rastreados e usa cookies
+            extractor_args = 'youtube:player_client=tv,mweb,web_safari;player_skip=webpage,configs'
+            
             cmd = [
                 'yt-dlp',
                 '-f', 'bestaudio/best',
                 '-o', cache_base + '.%(ext)s',
                 '--no-playlist',
                 '--no-warnings',
-                '--extractor-args', 'youtube:player_client=tv,mweb,web_safari',
+                '--extractor-args', extractor_args,
                 'https://www.youtube.com/watch?v=' + video_id
             ]
             if COOKIES_PATH:
