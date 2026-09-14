@@ -5,38 +5,56 @@ import subprocess
 import os
 import logging
 import tempfile
+import shutil
 from urllib.parse import urlparse
 
-# Configuração via variáveis de ambiente (Render) ou padrão local
 HOST = os.environ.get('HOST', '0.0.0.0')
 PORT = int(os.environ.get('PORT', '8000'))
 CACHE_DIR = os.environ.get('CACHE_DIR', os.path.join(tempfile.gettempdir(), 'music_cache'))
 COOKIES_ENV = os.environ.get('COOKIES', '')
 
-# Escreve os cookies em arquivo temporário se vieram por env var
 COOKIES_PATH = None
 if COOKIES_ENV:
     COOKIES_PATH = os.path.join(tempfile.gettempdir(), 'cookies.txt')
     with open(COOKIES_PATH, 'w') as f:
         f.write(COOKIES_ENV)
-else:
-    # fallback local: arquivo cookies.txt ao lado do server.py
-    local_cookies = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
-    if os.path.exists(local_cookies):
-        COOKIES_PATH = local_cookies
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
 log = logging.getLogger('music')
 
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-# Extensões aceitas e seus Content-Types correspondentes
 EXT_TYPES = [
     ('.m4a', 'audio/mp4'),
     ('.webm', 'audio/webm'),
     ('.opus', 'audio/ogg'),
     ('.mp3', 'audio/mpeg'),
 ]
+
+# Deno pode estar em vários lugares. Procura e adiciona ao PATH.
+DENO_DIRS = [
+    '/opt/render/project/.deno/bin',
+    os.path.expanduser('~/.deno/bin'),
+    '/usr/local/bin',
+    '/usr/bin',
+]
+
+
+def build_env():
+    """Retorna env com Deno no PATH se encontrado."""
+    env = os.environ.copy()
+    for d in DENO_DIRS:
+        if os.path.exists(os.path.join(d, 'deno')):
+            log.info('deno encontrado em %s', d)
+            env['PATH'] = d + ':' + env.get('PATH', '')
+            return env
+    log.warning('deno nao encontrado no PATH')
+    return env
+
+
+# Clientes que funcionam sem PO Token e sem cookies.
+# web_embedded e tv sao os mais estaveis em IP de datacenter.
+YT_CLIENTS = 'web_embedded,tv,ios,mweb,web_safari'
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -69,7 +87,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         super().do_GET()
 
     def _find_cached(self, base):
-        """Procura o arquivo cacheado com qualquer extensão aceita."""
         for ext, ct in EXT_TYPES:
             candidate = base + ext
             if os.path.exists(candidate):
@@ -89,29 +106,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         if not cache_file:
             log.info('baixando %s', video_id)
-            # Força clientes menos rastreados e usa cookies
-            extractor_args = 'youtube:player_client=tv,mweb,web_safari;player_skip=webpage,configs'
-            
             cmd = [
                 'yt-dlp',
                 '-f', 'bestaudio/best',
                 '-o', cache_base + '.%(ext)s',
                 '--no-playlist',
                 '--no-warnings',
-                '--extractor-args', extractor_args,
+                '--extractor-args', 'youtube:player_client=' + YT_CLIENTS,
                 'https://www.youtube.com/watch?v=' + video_id
             ]
             if COOKIES_PATH:
                 cmd.extend(['--cookies', COOKIES_PATH])
 
             try:
-                subprocess.run(
+                result = subprocess.run(
                     cmd,
                     check=True,
                     timeout=300,
                     capture_output=True,
-                    text=True
+                    text=True,
+                    env=build_env()
                 )
+                log.info('baixado %s', video_id)
             except subprocess.CalledProcessError as e:
                 err = e.stderr[-800:] if e.stderr else str(e)
                 log.error('yt-dlp falhou: %s', err)
@@ -131,7 +147,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             cache_file, content_type = self._find_cached(cache_base)
 
         if not cache_file:
-            log.error('arquivo não encontrado após download: %s', cache_base)
+            log.error('arquivo nao encontrado apos download: %s', cache_base)
             self.send_response(500)
             self.send_header('Content-Type', 'text/plain')
             self._cors()
