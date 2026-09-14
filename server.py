@@ -30,6 +30,14 @@ log = logging.getLogger('music')
 
 os.makedirs(CACHE_DIR, exist_ok=True)
 
+# Extensões aceitas e seus Content-Types correspondentes
+EXT_TYPES = [
+    ('.m4a', 'audio/mp4'),
+    ('.webm', 'audio/webm'),
+    ('.opus', 'audio/ogg'),
+    ('.mp3', 'audio/mpeg'),
+]
+
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def _cors(self):
@@ -45,7 +53,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
 
-        # Health check
         if parsed.path == '/health':
             self.send_response(200)
             self.send_header('Content-Type', 'text/plain')
@@ -54,14 +61,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(b'ok')
             return
 
-        # Áudio
         if parsed.path.startswith('/audio/'):
             video_id = parsed.path.split('/audio/')[-1]
             self.serve_audio(video_id)
             return
 
-        # HTML e arquivos estáticos (mesma pasta do server.py)
         super().do_GET()
+
+    def _find_cached(self, base):
+        """Procura o arquivo cacheado com qualquer extensão aceita."""
+        for ext, ct in EXT_TYPES:
+            candidate = base + ext
+            if os.path.exists(candidate):
+                return candidate, ct
+        return None, None
 
     def serve_audio(self, video_id):
         video_id = ''.join(c for c in video_id if c.isalnum() or c in '-_')
@@ -71,14 +84,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             return
 
-        cache_file = os.path.join(CACHE_DIR, video_id + '.m4a')
+        cache_base = os.path.join(CACHE_DIR, video_id)
+        cache_file, content_type = self._find_cached(cache_base)
 
-        if not os.path.exists(cache_file):
+        if not cache_file:
             log.info('baixando %s', video_id)
             cmd = [
                 'yt-dlp',
-                '-f', 'bestaudio[ext=m4a]/bestaudio',
-                '-o', cache_file,
+                '-f', 'bestaudio/best',
+                '-o', cache_base + '.%(ext)s',
                 '--no-playlist',
                 '--no-warnings',
                 'https://www.youtube.com/watch?v=' + video_id
@@ -87,7 +101,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 cmd.extend(['--cookies', COOKIES_PATH])
 
             try:
-                result = subprocess.run(
+                subprocess.run(
                     cmd,
                     check=True,
                     timeout=300,
@@ -110,10 +124,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.end_headers()
                 return
 
-        if not os.path.exists(cache_file):
+            cache_file, content_type = self._find_cached(cache_base)
+
+        if not cache_file:
+            log.error('arquivo não encontrado após download: %s', cache_base)
             self.send_response(500)
+            self.send_header('Content-Type', 'text/plain')
             self._cors()
             self.end_headers()
+            self.wfile.write(b'Falha: arquivo nao encontrado apos download')
             return
 
         file_size = os.path.getsize(cache_file)
@@ -130,7 +149,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
             length = end - start + 1
             self.send_response(206)
-            self.send_header('Content-Type', 'audio/mp4')
+            self.send_header('Content-Type', content_type)
             self.send_header('Content-Length', str(length))
             self.send_header('Content-Range', f'bytes {start}-{end}/{file_size}')
             self.send_header('Accept-Ranges', 'bytes')
@@ -141,7 +160,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.wfile.write(f.read(length))
         else:
             self.send_response(200)
-            self.send_header('Content-Type', 'audio/mp4')
+            self.send_header('Content-Type', content_type)
             self.send_header('Content-Length', str(file_size))
             self.send_header('Accept-Ranges', 'bytes')
             self._cors()
