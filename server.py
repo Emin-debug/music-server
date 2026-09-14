@@ -31,7 +31,7 @@ log = logging.getLogger('music')
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 
-class Handler(http.server.BaseHTTPRequestHandler):
+class Handler(http.server.SimpleHTTPRequestHandler):
     def _cors(self):
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
