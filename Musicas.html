@@ -13,14 +13,18 @@
     min-height: 100vh;
   }
   .container { width: 100%; max-width: 760px; }
-  h1 { font-size: 1.4rem; font-weight: 400; letter-spacing: 0.02em; margin-bottom: 1.5rem; color: #fff; }
+  h1 { font-size: 1.4rem; font-weight: 400; letter-spacing: 0.02em; color: #fff; }
+  .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
+  .topbar .user-info { font-size: 0.8rem; color: #888; }
+  .topbar .user-info strong { color: #1db954; font-weight: 500; }
+  .topbar .user-info button { margin-left: 0.6rem; }
   .search-row { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; }
-  input[type="text"] {
+  input[type="text"], input[type="password"] {
     flex: 1; padding: 0.75rem 1rem; border: 1px solid #2a2a2a;
     border-radius: 6px; background: #141414; color: #e0e0e0;
     font-size: 0.95rem; outline: none; transition: border 0.2s;
   }
-  input[type="text"]:focus { border-color: #444; }
+  input[type="text"]:focus, input[type="password"]:focus { border-color: #444; }
   button {
     padding: 0.75rem 1.5rem; border: none; border-radius: 6px;
     background: #1db954; color: #000; font-weight: 600;
@@ -42,18 +46,13 @@
   .result-info .title { font-size: 0.88rem; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .result-info .meta { font-size: 0.74rem; color: #777; margin-top: 2px; }
   .result-actions { display: flex; gap: 0.35rem; flex-shrink: 0; }
-
-  #player-wrap {
-    margin-top: 1.5rem; padding: 1rem; background: #141414;
-    border-radius: 8px; border: 1px solid #1f1f1f;
-  }
+  #player-wrap { margin-top: 1.5rem; padding: 1rem; background: #141414; border-radius: 8px; border: 1px solid #1f1f1f; }
   #player-wrap.hidden { display: none; }
   .now-title { font-size: 0.85rem; color: #aaa; margin-bottom: 0.5rem; }
   audio { width: 100%; height: 40px; margin-bottom: 0.75rem; }
   .player-controls { display: flex; gap: 0.5rem; flex-wrap: wrap; }
   .player-controls button { padding: 0.4rem 0.9rem; font-size: 0.8rem; border-radius: 4px; background: #1f1f1f; color: #ccc; font-weight: 500; }
   .player-controls button:hover { background: #2a2a2a; }
-
   #playlist-wrap { margin-top: 2rem; }
   #playlist-wrap h2 { font-size: 1rem; font-weight: 500; color: #ccc; margin-bottom: 0.75rem; }
   .playlist-item {
@@ -68,11 +67,61 @@
   .playlist-item .p-actions button:hover { background: #222; color: #ccc; }
   .empty-list { font-size: 0.82rem; color: #555; padding: 0.5rem 0; }
   .playlist-actions { margin-top: 0.75rem; display: flex; gap: 0.5rem; }
+  /* Auth overlay */
+  #auth-overlay {
+    position: fixed; inset: 0; background: #0a0a0a;
+    display: flex; align-items: center; justify-content: center;
+    padding: 1rem; z-index: 100;
+  }
+  #auth-overlay.hidden { display: none; }
+  .auth-box {
+    width: 100%; max-width: 380px;
+    background: #141414; border: 1px solid #1f1f1f;
+    border-radius: 10px; padding: 1.5rem;
+  }
+  .auth-box h2 { font-size: 1.2rem; font-weight: 400; color: #fff; margin-bottom: 1.25rem; }
+  .auth-box .field { margin-bottom: 0.75rem; }
+  .auth-box .field label { display: block; font-size: 0.75rem; color: #888; margin-bottom: 0.35rem; }
+  .auth-box .field input { width: 100%; }
+  .auth-box .actions { margin-top: 1rem; display: flex; flex-direction: column; gap: 0.5rem; }
+  .auth-box .actions button { width: 100%; }
+  .auth-box .switch { margin-top: 0.75rem; font-size: 0.8rem; color: #777; text-align: center; }
+  .auth-box .switch a { color: #1db954; cursor: pointer; text-decoration: none; }
+  .auth-box .error { color: #e05555; font-size: 0.8rem; margin-top: 0.5rem; min-height: 1.2em; }
 </style>
 </head>
 <body>
+
+<div id="auth-overlay">
+  <div class="auth-box">
+    <h2 id="auth-title">Entrar</h2>
+    <div class="field">
+      <label>Usuário</label>
+      <input type="text" id="auth-username" autocomplete="username" autocapitalize="off" spellcheck="false">
+    </div>
+    <div class="field">
+      <label>Senha</label>
+      <input type="password" id="auth-password" autocomplete="current-password">
+    </div>
+    <div class="error" id="auth-error"></div>
+    <div class="actions">
+      <button id="auth-submit">Entrar</button>
+    </div>
+    <div class="switch" id="auth-switch">
+      Não tem conta? <a id="auth-toggle">Criar</a>
+    </div>
+  </div>
+</div>
+
 <div class="container">
-  <h1>Music</h1>
+  <div class="topbar">
+    <h1>Music</h1>
+    <div class="user-info" id="user-info" style="display:none">
+      <strong id="username-display"></strong>
+      <button class="small secondary" id="btnLogout">Sair</button>
+    </div>
+  </div>
+
   <div class="search-row">
     <input type="text" id="query" placeholder="Nome da música, artista ou URL do YouTube..." autocomplete="off">
     <button id="searchBtn">Buscar</button>
@@ -101,19 +150,9 @@
 </div>
 
 <script>
-// ============================================================
-//  CONFIGURAÇÃO DO BACKEND
-//  Deixe vazio ('') se este HTML for servido pelo mesmo
-//  server.py (recomendado quando está no Render).
-//  Se este HTML estiver no GitHub Pages, coloque aqui a URL
-//  do backend no Render, ex: 'https://music-server.onrender.com'
-// ============================================================
 const SERVER_BASE = '';
-
-// ============================================================
-//  Estado
-// ============================================================
 const $ = id => document.getElementById(id);
+
 const queryInput = $('query');
 const searchBtn = $('searchBtn');
 const statusEl = $('status');
@@ -122,24 +161,154 @@ const playerWrap = $('player-wrap');
 const nowTitle = $('now-title');
 const audioEl = $('audioEl');
 const playlistEl = $('playlist');
+const authOverlay = $('auth-overlay');
+const authTitle = $('auth-title');
+const authUsername = $('auth-username');
+const authPassword = $('auth-password');
+const authError = $('auth-error');
+const authSubmit = $('auth-submit');
+const authToggle = $('auth-toggle');
+const authSwitch = $('auth-switch');
+const userInfo = $('user-info');
+const usernameDisplay = $('username-display');
 
 let currentVideo = null;
 let playlist = [];
 let playlistIndex = -1;
-
-try {
-  const saved = localStorage.getItem('anon_music_playlist');
-  if (saved) playlist = JSON.parse(saved);
-} catch(e) {}
-
-function savePlaylist() {
-  try { localStorage.setItem('anon_music_playlist', JSON.stringify(playlist)); } catch(e) {}
-}
+let currentUser = null;
+let authMode = 'login'; // 'login' | 'register'
 
 function setStatus(msg) { statusEl.textContent = msg; }
 
 // ============================================================
-//  Busca — Piped público (só busca, não extrai stream)
+//  Auth
+// ============================================================
+function showAuth() {
+  authOverlay.classList.remove('hidden');
+  userInfo.style.display = 'none';
+  authUsername.value = '';
+  authPassword.value = '';
+  authError.textContent = '';
+  authUsername.focus();
+}
+
+function hideAuth() {
+  authOverlay.classList.add('hidden');
+  userInfo.style.display = '';
+  usernameDisplay.textContent = currentUser;
+}
+
+function setAuthMode(mode) {
+  authMode = mode;
+  if (mode === 'login') {
+    authTitle.textContent = 'Entrar';
+    authSubmit.textContent = 'Entrar';
+    authSwitch.innerHTML = 'Não tem conta? <a id="auth-toggle">Criar</a>';
+    authPassword.setAttribute('autocomplete', 'current-password');
+  } else {
+    authTitle.textContent = 'Criar conta';
+    authSubmit.textContent = 'Criar conta';
+    authSwitch.innerHTML = 'Já tem conta? <a id="auth-toggle">Entrar</a>';
+    authPassword.setAttribute('autocomplete', 'new-password');
+  }
+  bindToggle();
+  authError.textContent = '';
+}
+
+function bindToggle() {
+  const t = $('auth-toggle');
+  if (t) t.addEventListener('click', () => setAuthMode(authMode === 'login' ? 'register' : 'login'));
+}
+
+async function doAuth() {
+  const username = authUsername.value.trim();
+  const password = authPassword.value;
+  if (!username || !password) {
+    authError.textContent = 'Preencha usuário e senha.';
+    return;
+  }
+  authSubmit.disabled = true;
+  authError.textContent = '';
+
+  const endpoint = authMode === 'login' ? '/api/login' : '/api/register';
+  try {
+    const res = await fetch(SERVER_BASE + endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ username, password })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      authError.textContent = data.error || 'falha';
+      return;
+    }
+    currentUser = data.username;
+    hideAuth();
+    await loadPlaylistFromServer();
+    setStatus('Olá, ' + currentUser);
+  } catch (err) {
+    authError.textContent = 'erro de rede';
+  } finally {
+    authSubmit.disabled = false;
+  }
+}
+
+async function checkSession() {
+  try {
+    const res = await fetch(SERVER_BASE + '/api/me', { credentials: 'include' });
+    if (res.ok) {
+      const data = await res.json();
+      currentUser = data.username;
+      hideAuth();
+      await loadPlaylistFromServer();
+      return;
+    }
+  } catch (e) {}
+  showAuth();
+}
+
+authSubmit.addEventListener('click', doAuth);
+authPassword.addEventListener('keydown', e => { if (e.key === 'Enter') doAuth(); });
+authUsername.addEventListener('keydown', e => { if (e.key === 'Enter') authPassword.focus(); });
+
+$('btnLogout').addEventListener('click', async () => {
+  await fetch(SERVER_BASE + '/api/logout', { method: 'POST', credentials: 'include' });
+  currentUser = null;
+  playlist = [];
+  renderPlaylist();
+  showAuth();
+});
+
+// ============================================================
+//  Playlist — sincronização com servidor
+// ============================================================
+async function loadPlaylistFromServer() {
+  if (!currentUser) return;
+  try {
+    const res = await fetch(SERVER_BASE + '/api/playlist', { credentials: 'include' });
+    if (res.ok) {
+      const data = await res.json();
+      playlist = data.playlist || [];
+      renderPlaylist();
+    }
+  } catch (e) {}
+}
+
+async function savePlaylistToServer() {
+  if (!currentUser) return;
+  try {
+    await fetch(SERVER_BASE + '/api/playlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ playlist })
+    });
+  } catch (e) {}
+}
+
+// ============================================================
+//  Busca
 // ============================================================
 const PIPED_SEARCH = [
   'https://pipedapi.ducks.party',
@@ -151,7 +320,6 @@ const PIPED_SEARCH = [
 function isYouTubeUrl(str) {
   return /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/.test(str);
 }
-
 function extractVideoId(url) {
   const m = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/);
   return m ? m[1] : null;
@@ -165,7 +333,6 @@ async function searchPiped(query) {
       const res = await fetch(url, { mode: 'cors', credentials: 'omit' });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
-
       const items = (data.items || [])
         .filter(it => it.type === 'stream' || it.url)
         .slice(0, 15)
@@ -176,27 +343,13 @@ async function searchPiped(query) {
           thumb: it.thumbnail || ''
         }))
         .filter(it => it.id && it.id.length === 11);
-
       if (items.length === 0) throw new Error('Sem resultados');
       return items;
-    } catch (e) {
-      lastErr = e;
-      continue;
-    }
+    } catch (e) { lastErr = e; continue; }
   }
-  throw new Error('Todas as instâncias de busca falharam. Última: ' + (lastErr ? lastErr.message : 'desconhecido'));
+  throw new Error('Busca falhou: ' + (lastErr ? lastErr.message : '?'));
 }
 
-// ============================================================
-//  Áudio — servidor backend com yt-dlp
-// ============================================================
-function getAudioStream(videoId) {
-  return SERVER_BASE + '/audio/' + videoId;
-}
-
-// ============================================================
-//  UI — resultados
-// ============================================================
 function renderResult(r) {
   const card = document.createElement('div');
   card.className = 'result-card';
@@ -207,12 +360,11 @@ function renderResult(r) {
       <div class="meta">${escapeHtml(r.author || '')}</div>
     </div>
     <div class="result-actions">
-      <button class="small play" data-id="${r.id}">▶</button>
-      <button class="small secondary add" data-id="${r.id}">+</button>
+      <button class="small play">▶</button>
+      <button class="small secondary add">+</button>
     </div>
   `;
   resultsEl.appendChild(card);
-
   card.querySelector('.play').addEventListener('click', () => playNow(r));
   card.querySelector('.add').addEventListener('click', () => addToPlaylist(r));
 }
@@ -221,28 +373,25 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-// ============================================================
-//  Player
-// ============================================================
+function getAudioStream(videoId) { return SERVER_BASE + '/audio/' + videoId; }
+
 async function playNow(track) {
   currentVideo = track;
   nowTitle.textContent = track.title;
   playerWrap.classList.remove('hidden');
-  setStatus('Preparando áudio... (pode levar alguns segundos na primeira vez)');
-
+  setStatus('Preparando áudio...');
   try {
-    const url = getAudioStream(track.id);
-    audioEl.src = url;
+    audioEl.src = getAudioStream(track.id);
     audioEl.load();
     await audioEl.play();
     setStatus('Tocando.');
   } catch (err) {
-    setStatus('Erro ao tocar: ' + err.message + ' — verifique se o servidor está rodando.');
+    setStatus('Erro ao tocar: ' + err.message);
   }
 }
 
 // ============================================================
-//  Playlist
+//  Playlist local
 // ============================================================
 function addToPlaylist(track) {
   if (playlist.find(t => t.id === track.id)) {
@@ -250,25 +399,25 @@ function addToPlaylist(track) {
     return;
   }
   playlist.push({ id: track.id, title: track.title, author: track.author, thumb: track.thumb });
-  savePlaylist();
   renderPlaylist();
-  setStatus('Adicionado à playlist.');
+  savePlaylistToServer();
+  setStatus('Adicionado.');
 }
 
 function removeFromPlaylist(idx) {
   playlist.splice(idx, 1);
   if (playlistIndex === idx) playlistIndex = -1;
   else if (playlistIndex > idx) playlistIndex--;
-  savePlaylist();
   renderPlaylist();
+  savePlaylistToServer();
 }
 
 function moveInPlaylist(idx, dir) {
   const newIdx = idx + dir;
   if (newIdx < 0 || newIdx >= playlist.length) return;
   [playlist[idx], playlist[newIdx]] = [playlist[newIdx], playlist[idx]];
-  savePlaylist();
   renderPlaylist();
+  savePlaylistToServer();
 }
 
 function playPlaylistItem(idx) {
@@ -290,14 +439,13 @@ function renderPlaylist() {
       <span class="idx">${i + 1}</span>
       <span class="p-title">${escapeHtml(t.title)}</span>
       <div class="p-actions">
-        <button class="play-item" data-idx="${i}">▶</button>
-        <button class="up" data-idx="${i}">↑</button>
-        <button class="down" data-idx="${i}">↓</button>
-        <button class="del" data-idx="${i}">✕</button>
+        <button class="play-item">▶</button>
+        <button class="up">↑</button>
+        <button class="down">↓</button>
+        <button class="del">✕</button>
       </div>
     `;
     playlistEl.appendChild(item);
-
     item.querySelector('.play-item').addEventListener('click', () => playPlaylistItem(i));
     item.querySelector('.up').addEventListener('click', () => moveInPlaylist(i, -1));
     item.querySelector('.down').addEventListener('click', () => moveInPlaylist(i, 1));
@@ -314,11 +462,9 @@ searchBtn.addEventListener('click', async () => {
   searchBtn.disabled = true;
   resultsEl.innerHTML = '';
   setStatus('Buscando...');
-
   try {
     if (isYouTubeUrl(q)) {
       const id = extractVideoId(q);
-      if (!id) throw new Error('URL inválida');
       const track = { id, title: 'Vídeo ' + id, author: '', thumb: 'https://i.ytimg.com/vi/' + id + '/mqdefault.jpg' };
       renderResult(track);
       playNow(track);
@@ -339,40 +485,35 @@ queryInput.addEventListener('keydown', e => { if (e.key === 'Enter') searchBtn.c
 $('btnPrev').addEventListener('click', () => {
   if (playlistIndex > 0) { playlistIndex--; playPlaylistItem(playlistIndex); }
 });
-
 $('btnNext').addEventListener('click', () => {
   if (playlistIndex >= 0 && playlistIndex < playlist.length - 1) { playlistIndex++; playPlaylistItem(playlistIndex); }
 });
-
 $('btnStop').addEventListener('click', () => {
-  audioEl.pause();
-  audioEl.currentTime = 0;
-  currentVideo = null;
-  nowTitle.textContent = '';
+  audioEl.pause(); audioEl.currentTime = 0;
+  currentVideo = null; nowTitle.textContent = '';
 });
-
 $('btnClearPlaylist').addEventListener('click', () => {
   if (confirm('Limpar toda a playlist?')) {
-    playlist = [];
-    playlistIndex = -1;
-    savePlaylist();
-    renderPlaylist();
+    playlist = []; playlistIndex = -1;
+    renderPlaylist(); savePlaylistToServer();
   }
 });
-
 $('btnAddCurrent').addEventListener('click', () => {
   if (currentVideo) addToPlaylist(currentVideo);
   else setStatus('Nada tocando agora.');
 });
-
 audioEl.addEventListener('ended', () => {
   if (playlistIndex >= 0 && playlistIndex < playlist.length - 1) {
-    playlistIndex++;
-    playPlaylistItem(playlistIndex);
+    playlistIndex++; playPlaylistItem(playlistIndex);
   }
 });
 
+// ============================================================
+//  Boot
+// ============================================================
+setAuthMode('login');
 renderPlaylist();
+checkSession();
 </script>
 </body>
 </html>
