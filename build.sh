@@ -12,7 +12,7 @@ else
     exit 1
 fi
 
-echo "==> Instalando Node.js portavel em /opt/render/project/node"
+echo "==> Instalando Node.js portatil em /opt/render/project/node"
 NODE_VERSION="v20.11.1"
 NODE_DIR="/opt/render/project/node"
 mkdir -p "$NODE_DIR"
@@ -34,16 +34,35 @@ echo "==> Instalando dependencias Python"
 cd /opt/render/project/src
 pip install -r requirements.txt
 
-echo "==> Clonando bgutil-ytdlp-pot-provider"
+echo "==> Clonando bgutil-ytdlp-pot-provider 1.3.1"
 rm -rf bgutil-ytdlp-pot-provider
 git clone --depth 1 --branch 1.3.1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git
 
 cd bgutil-ytdlp-pot-provider/server/
 
+echo "==> Aplicando override de html-encoding-sniffer 4.0.0"
+node <<'EOF'
+const fs = require('fs');
+const path = 'package.json';
+const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
+
+pkg.overrides = pkg.overrides || {};
+pkg.overrides['html-encoding-sniffer'] = '4.0.0';
+
+fs.writeFileSync(path, JSON.stringify(pkg, null, 2));
+console.log('overrides aplicado:', JSON.stringify(pkg.overrides));
+EOF
+
+echo "==> Limpando lock e node_modules"
+rm -rf node_modules package-lock.json
+
 echo "==> npm install"
 npm install --no-audit --no-fund
 
-echo "==> compilando TypeScript"
+echo "==> Verificando versao instalada do html-encoding-sniffer"
+npm ls html-encoding-sniffer || true
+
+echo "==> Compilando TypeScript"
 npx tsc
 
 cd /opt/render/project/src
