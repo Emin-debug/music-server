@@ -18,7 +18,7 @@ import atexit
 from urllib.parse import urlparse
 from http.cookies import SimpleCookie
 
-# Adiciona Node portatil ao PATH antes de tudo
+# Node portatil no PATH antes de qualquer coisa
 _NODE_DIR = '/opt/render/project/node/bin'
 if os.path.isdir(_NODE_DIR) and _NODE_DIR not in os.environ.get('PATH', ''):
     os.environ['PATH'] = _NODE_DIR + ':' + os.environ.get('PATH', '')
@@ -37,6 +37,8 @@ SECRET_FILE = os.path.join(DATA_DIR, 'secret.key')
 POT_SERVER_DIR = os.path.join(BASE_DIR, 'bgutil-ytdlp-pot-provider', 'server')
 POT_MAIN = os.path.join(POT_SERVER_DIR, 'build', 'main.js')
 POT_URL = 'http://127.0.0.1:4416'
+POT_STDOUT_LOG = '/tmp/pot_stdout.log'
+POT_STDERR_LOG = '/tmp/pot_stderr.log'
 
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(PLAYLIST_DIR, exist_ok=True)
@@ -113,14 +115,23 @@ def start_pot_server():
         log.warning('PO Token Provider nao encontrado em %s', POT_MAIN)
         return
     try:
+        out_f = open(POT_STDOUT_LOG, 'w')
+        err_f = open(POT_STDERR_LOG, 'w')
         POT_PROCESS = subprocess.Popen(
             ['node', POT_MAIN],
             cwd=POT_SERVER_DIR,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+            stdout=out_f,
+            stderr=err_f
         )
         log.info('PO Token Provider iniciado (pid=%d)', POT_PROCESS.pid)
-        time.sleep(3)
+        time.sleep(5)
+        if POT_PROCESS.poll() is not None:
+            log.error('PO Token Provider morreu imediatamente (exit=%s)', POT_PROCESS.returncode)
+            try:
+                with open(POT_STDERR_LOG, 'r') as f:
+                    log.error('stderr: %s', f.read()[-1000:])
+            except Exception:
+                pass
     except Exception as e:
         log.error('falha ao iniciar PO Token Provider: %s', e)
         POT_PROCESS = None
@@ -383,8 +394,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 'POT_MAIN: ' + POT_MAIN + '\n'
                 'existe: ' + ('sim' if os.path.isfile(POT_MAIN) else 'nao') + '\n'
                 'POT_URL: ' + POT_URL + '\n'
+                'node no PATH: ' + (shutil.which('node') or 'nao') + '\n'
             )
             self._text_response(200, info)
+            return
+
+        if parsed.path == '/potlog':
+            out = ''
+            err = ''
+            try:
+                if os.path.exists(POT_STDOUT_LOG):
+                    with open(POT_STDOUT_LOG, 'r') as f:
+                        out = f.read()[-3000:]
+                if os.path.exists(POT_STDERR_LOG):
+                    with open(POT_STDERR_LOG, 'r') as f:
+                        err = f.read()[-3000:]
+            except Exception as e:
+                err = 'erro lendo logs: ' + str(e)
+            self._text_response(200,
+                '=== STDOUT ===\n' + (out or '(vazio)') +
+                '\n\n=== STDERR ===\n' + (err or '(vazio)')
+            )
             return
 
         if parsed.path == '/api/me':
