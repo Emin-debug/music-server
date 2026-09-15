@@ -40,14 +40,14 @@ git clone --depth 1 --branch 1.3.1 https://github.com/Brainicism/bgutil-ytdlp-po
 
 cd bgutil-ytdlp-pot-provider/server/
 
-echo "==> Aplicando override de html-encoding-sniffer 4.0.0"
+echo "==> Aplicando override de jsdom 27.0.0 (ultima versao CommonJS)"
 node <<'EOF'
 const fs = require('fs');
 const path = 'package.json';
 const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
 
 pkg.overrides = pkg.overrides || {};
-pkg.overrides['html-encoding-sniffer'] = '4.0.0';
+pkg.overrides['jsdom'] = '27.0.0';
 
 fs.writeFileSync(path, JSON.stringify(pkg, null, 2));
 console.log('overrides aplicado:', JSON.stringify(pkg.overrides));
@@ -59,7 +59,8 @@ rm -rf node_modules package-lock.json
 echo "==> npm install"
 npm install --no-audit --no-fund
 
-echo "==> Verificando versao instalada do html-encoding-sniffer"
+echo "==> Verificando versoes instaladas"
+npm ls jsdom || true
 npm ls html-encoding-sniffer || true
 
 echo "==> Compilando TypeScript"
