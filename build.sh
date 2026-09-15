@@ -40,27 +40,34 @@ git clone --depth 1 --branch 1.3.1 https://github.com/Brainicism/bgutil-ytdlp-po
 
 cd bgutil-ytdlp-pot-provider/server/
 
-echo "==> Aplicando override de jsdom 27.0.0 (ultima versao CommonJS)"
+echo "==> Ajustando jsdom para 24.1.3"
 node <<'EOF'
 const fs = require('fs');
 const path = 'package.json';
 const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
 
-pkg.overrides = pkg.overrides || {};
-pkg.overrides['jsdom'] = '27.0.0';
+if (pkg.dependencies && pkg.dependencies.jsdom) {
+    console.log('jsdom antes:', pkg.dependencies.jsdom);
+    pkg.dependencies.jsdom = '24.1.3';
+}
+if (pkg.devDependencies && pkg.devDependencies.jsdom) {
+    pkg.devDependencies.jsdom = '24.1.3';
+}
+delete pkg.overrides;
 
 fs.writeFileSync(path, JSON.stringify(pkg, null, 2));
-console.log('overrides aplicado:', JSON.stringify(pkg.overrides));
+console.log('jsdom depois:', (pkg.dependencies && pkg.dependencies.jsdom) || '(nao estava em deps)');
 EOF
 
 echo "==> Limpando lock e node_modules"
 rm -rf node_modules package-lock.json
 
 echo "==> npm install"
-npm install --no-audit --no-fund --legacy-peer-deps
-echo "==> Verificando versoes instaladas"
+npm install --no-audit --no-fund
+
+echo "==> Versoes instaladas"
 npm ls jsdom || true
-npm ls html-encoding-sniffer || true
+npm ls parse5 || true
 
 echo "==> Compilando TypeScript"
 npx tsc
