@@ -3,15 +3,47 @@ import http.server
 import socketserver
 import subprocess
 import os
+import json
 import logging
 import tempfile
 import shutil
+import hashlib
+import hmac
+import secrets
+import base64
+import time
+import threading
 from urllib.parse import urlparse
+from http.cookies import SimpleCookie
 
 HOST = os.environ.get('HOST', '0.0.0.0')
 PORT = int(os.environ.get('PORT', '8000'))
 CACHE_DIR = os.environ.get('CACHE_DIR', os.path.join(tempfile.gettempdir(), 'music_cache'))
 COOKIES_ENV = os.environ.get('COOKIES', '')
+
+# Pasta de dados persistentes (usuarios, playlists, secret)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, 'data')
+USERS_FILE = os.path.join(DATA_DIR, 'users.json')
+PLAYLIST_DIR = os.path.join(DATA_DIR, 'playlists')
+SECRET_FILE = os.path.join(DATA_DIR, 'secret.key')
+
+os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(PLAYLIST_DIR, exist_ok=True)
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+# Lock para operacoes em users.json
+users_lock = threading.Lock()
+
+# Chave HMAC persistente
+if os.path.exists(SECRET_FILE):
+    with open(SECRET_FILE, 'rb') as f:
+        SECRET_KEY = f.read()
+else:
+    SECRET_KEY = secrets.token_bytes(64)
+    with open(SECRET_FILE, 'wb') as f:
+        f.write(SECRET_KEY)
+    os.chmod(SECRET_FILE, 0o600)
 
 COOKIES_PATH = None
 if COOKIES_ENV:
@@ -22,8 +54,6 @@ if COOKIES_ENV:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
 log = logging.getLogger('music')
 
-os.makedirs(CACHE_DIR, exist_ok=True)
-
 EXT_TYPES = [
     ('.m4a', 'audio/mp4'),
     ('.webm', 'audio/webm'),
@@ -32,8 +62,8 @@ EXT_TYPES = [
 ]
 
 DENO_CANDIDATES = [
-    '/opt/render/project/.deno/bin/deno',
     os.path.expanduser('~/.deno/bin/deno'),
+    '/opt/render/project/.deno/bin/deno',
     '/usr/local/bin/deno',
     '/usr/bin/deno',
 ]
@@ -50,46 +80,190 @@ DENO_PATH = find_deno()
 if DENO_PATH:
     log.info('deno encontrado em %s', DENO_PATH)
 else:
-    log.warning('deno NAO encontrado. yt-dlp vai falhar sem runtime JS.')
+    log.warning('deno NAO encontrado')
 
 YT_CLIENTS = 'web_embedded,tv,ios,mweb,web_safari'
+SESSION_DAYS = 30
 
 
+# ============================================================
+#  Helpers de usuario e sessao
+# ============================================================
+def load_users():
+    if not os.path.exists(USERS_FILE):
+        return {}
+    try:
+        with open(USERS_FILE, 'r') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_users(users):
+    tmp = USERS_FILE + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(users, f, indent=2)
+    os.replace(tmp, USERS_FILE)
+
+
+def hash_password(password, salt=None):
+    if salt is None:
+        salt = secrets.token_hex(16)
+    h = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt.encode('utf-8'), 120000)
+    return salt, h.hex()
+
+
+def check_password(password, salt, stored_hash):
+    _, h = hash_password(password, salt)
+    return hmac.compare_digest(h, stored_hash)
+
+
+def make_token(username):
+    expires = int(time.time()) + SESSION_DAYS * 86400
+    payload = f'{username}:{expires}'
+    sig = hmac.new(SECRET_KEY, payload.encode(), hashlib.sha256).hexdigest()
+    raw = f'{payload}:{sig}'
+    return base64.urlsafe_b64encode(raw.encode()).decode()
+
+
+def verify_token(token):
+    try:
+        decoded = base64.urlsafe_b64decode(token.encode()).decode()
+        username, expires_str, sig = decoded.rsplit(':', 2)
+        expires = int(expires_str)
+        if expires < time.time():
+            return None
+        expected = hmac.new(SECRET_KEY, f'{username}:{expires}'.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected):
+            return None
+        return username
+    except Exception:
+        return None
+
+
+def get_username_from_request(handler):
+    cookie_header = handler.headers.get('Cookie', '')
+    if not cookie_header:
+        return None
+    cookies = SimpleCookie()
+    try:
+        cookies.load(cookie_header)
+    except Exception:
+        return None
+    if 'session' not in cookies:
+        return None
+    return verify_token(cookies['session'].value)
+
+
+def valid_username(u):
+    if not u or not isinstance(u, str):
+        return False
+    if len(u) < 3 or len(u) > 32:
+        return False
+    return all(c.isalnum() or c in '-_.' for c in u)
+
+
+def playlist_path(username):
+    safe = ''.join(c for c in username if c.isalnum() or c in '-_.')
+    return os.path.join(PLAYLIST_DIR, safe + '.json')
+
+
+def load_playlist(username):
+    path = playlist_path(username)
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, 'r') as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def save_playlist(username, data):
+    path = playlist_path(username)
+    tmp = path + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+# ============================================================
+#  Handler
+# ============================================================
 class Handler(http.server.SimpleHTTPRequestHandler):
     def _cors(self):
         self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Range')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Range')
+
+    def _json_response(self, code, obj, extra_headers=None):
+        body = json.dumps(obj, ensure_ascii=False).encode('utf-8')
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self._cors()
+        if extra_headers:
+            for k, v in extra_headers.items():
+                self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _text_response(self, code, text, ctype='text/plain; charset=utf-8'):
+        body = text.encode('utf-8') if isinstance(text, str) else text
+        self.send_response(code)
+        self.send_header('Content-Type', ctype)
+        self.send_header('Content-Length', str(len(body)))
+        self._cors()
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_json_body(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            if length == 0:
+                return {}
+            body = self.rfile.read(length)
+            return json.loads(body.decode('utf-8'))
+        except Exception:
+            return None
 
     def do_OPTIONS(self):
         self.send_response(204)
         self._cors()
         self.end_headers()
 
+    # -------------------- GET --------------------
     def do_GET(self):
         parsed = urlparse(self.path)
 
         if parsed.path == '/health':
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/plain')
-            self._cors()
-            self.end_headers()
-            self.wfile.write(b'ok')
+            self._text_response(200, 'ok')
+            return
+
+        if parsed.path == '/api/me':
+            username = get_username_from_request(self)
+            if username:
+                self._json_response(200, {'username': username})
+            else:
+                self._json_response(401, {'error': 'nao autenticado'})
+            return
+
+        if parsed.path == '/api/playlist':
+            username = get_username_from_request(self)
+            if not username:
+                self._json_response(401, {'error': 'nao autenticado'})
+                return
+            self._json_response(200, {'playlist': load_playlist(username)})
             return
 
         if parsed.path.startswith('/debug/'):
             video_id = parsed.path.split('/debug/')[-1]
             video_id = ''.join(c for c in video_id if c.isalnum() or c in '-_')
             if not video_id:
-                self.send_response(400)
-                self._cors()
-                self.end_headers()
+                self._text_response(400, 'id invalido')
                 return
-
             cmd = [
-                'yt-dlp',
-                '--list-formats',
-                '--no-warnings',
+                'yt-dlp', '--list-formats', '--no-warnings',
                 '--extractor-args', 'youtube:player_client=' + YT_CLIENTS,
             ]
             if DENO_PATH:
@@ -97,25 +271,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if COOKIES_PATH:
                 cmd.extend(['--cookies', COOKIES_PATH])
             cmd.append('https://www.youtube.com/watch?v=' + video_id)
-
-            log.info('debug list-formats %s', video_id)
             try:
                 r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
                 out = (
-                    '=== COMMAND ===\n' + ' '.join(cmd) + '\n\n'
-                    '=== DENO ===\n' + (DENO_PATH or 'nao encontrado') + '\n\n'
-                    '=== COOKIES ===\n' + ('configurado' if COOKIES_PATH else 'ausente') + '\n\n'
-                    '=== STDOUT ===\n' + (r.stdout or '(vazio)') + '\n\n'
-                    '=== STDERR ===\n' + (r.stderr or '(vazio)') + '\n'
+                    '=== STDOUT ===\n' + (r.stdout or '') +
+                    '\n\n=== STDERR ===\n' + (r.stderr or '')
                 )
             except Exception as e:
                 out = 'erro: ' + str(e)
-
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/plain; charset=utf-8')
-            self._cors()
-            self.end_headers()
-            self.wfile.write(out.encode())
+            self._text_response(200, out)
             return
 
         if parsed.path.startswith('/audio/'):
@@ -125,6 +289,98 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         super().do_GET()
 
+    # -------------------- POST --------------------
+    def do_POST(self):
+        parsed = urlparse(self.path)
+
+        if parsed.path == '/api/register':
+            data = self._read_json_body()
+            if data is None:
+                self._json_response(400, {'error': 'json invalido'})
+                return
+            username = (data.get('username') or '').strip()
+            password = data.get('password') or ''
+            if not valid_username(username):
+                self._json_response(400, {'error': 'username invalido (3-32, alfanumerico)'})
+                return
+            if len(password) < 4:
+                self._json_response(400, {'error': 'senha muito curta (min 4)'})
+                return
+
+            with users_lock:
+                users = load_users()
+                if username in users:
+                    self._json_response(409, {'error': 'usuario ja existe'})
+                    return
+                salt, h = hash_password(password)
+                users[username] = {'salt': salt, 'hash': h, 'created': int(time.time())}
+                save_users(users)
+
+            token = make_token(username)
+            cookie = f'session={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_DAYS*86400}'
+            self._json_response(200, {'username': username}, extra_headers={'Set-Cookie': cookie})
+            return
+
+        if parsed.path == '/api/login':
+            data = self._read_json_body()
+            if data is None:
+                self._json_response(400, {'error': 'json invalido'})
+                return
+            username = (data.get('username') or '').strip()
+            password = data.get('password') or ''
+
+            with users_lock:
+                users = load_users()
+                u = users.get(username)
+
+            if not u or not check_password(password, u['salt'], u['hash']):
+                self._json_response(401, {'error': 'usuario ou senha invalidos'})
+                return
+
+            token = make_token(username)
+            cookie = f'session={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_DAYS*86400}'
+            self._json_response(200, {'username': username}, extra_headers={'Set-Cookie': cookie})
+            return
+
+        if parsed.path == '/api/logout':
+            cookie = 'session=; Path=/; HttpOnly; Max-Age=0'
+            self._json_response(200, {'ok': True}, extra_headers={'Set-Cookie': cookie})
+            return
+
+        if parsed.path == '/api/playlist':
+            username = get_username_from_request(self)
+            if not username:
+                self._json_response(401, {'error': 'nao autenticado'})
+                return
+            data = self._read_json_body()
+            if data is None or 'playlist' not in data:
+                self._json_response(400, {'error': 'payload invalido'})
+                return
+            playlist = data['playlist']
+            if not isinstance(playlist, list):
+                self._json_response(400, {'error': 'playlist deve ser lista'})
+                return
+            # sanitiza
+            clean = []
+            for t in playlist:
+                if not isinstance(t, dict):
+                    continue
+                vid = t.get('id', '')
+                if not isinstance(vid, str) or len(vid) != 11:
+                    continue
+                clean.append({
+                    'id': vid,
+                    'title': str(t.get('title', ''))[:300],
+                    'author': str(t.get('author', ''))[:200],
+                    'thumb': str(t.get('thumb', ''))[:500],
+                })
+            save_playlist(username, clean)
+            self._json_response(200, {'ok': True, 'count': len(clean)})
+            return
+
+        self._json_response(404, {'error': 'endpoint nao encontrado'})
+
+    # -------------------- audio --------------------
     def _find_cached(self, base):
         for ext, ct in EXT_TYPES:
             candidate = base + ext
@@ -135,9 +391,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def serve_audio(self, video_id):
         video_id = ''.join(c for c in video_id if c.isalnum() or c in '-_')
         if not video_id:
-            self.send_response(400)
-            self._cors()
-            self.end_headers()
+            self._text_response(400, 'id invalido')
             return
 
         cache_base = os.path.join(CACHE_DIR, video_id)
@@ -145,7 +399,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         if not cache_file:
             log.info('baixando %s', video_id)
-
             cmd = [
                 'yt-dlp',
                 '-f', 'bestaudio/best',
@@ -161,39 +414,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             cmd.append('https://www.youtube.com/watch?v=' + video_id)
 
             try:
-                result = subprocess.run(
-                    cmd,
-                    check=True,
-                    timeout=300,
-                    capture_output=True,
-                    text=True
-                )
+                subprocess.run(cmd, check=True, timeout=300, capture_output=True, text=True)
                 log.info('baixado %s', video_id)
             except subprocess.CalledProcessError as e:
                 err = e.stderr[-800:] if e.stderr else str(e)
                 log.error('yt-dlp falhou: %s', err)
-                self.send_response(500)
-                self.send_header('Content-Type', 'text/plain; charset=utf-8')
-                self._cors()
-                self.end_headers()
-                self.wfile.write(('Falha: ' + err).encode())
+                self._text_response(500, 'Falha: ' + err)
                 return
             except Exception as e:
                 log.error('erro inesperado: %s', e)
-                self.send_response(500)
-                self._cors()
-                self.end_headers()
+                self._text_response(500, 'erro interno')
                 return
 
             cache_file, content_type = self._find_cached(cache_base)
 
         if not cache_file:
-            log.error('arquivo nao encontrado apos download: %s', cache_base)
-            self.send_response(500)
-            self.send_header('Content-Type', 'text/plain')
-            self._cors()
-            self.end_headers()
-            self.wfile.write(b'Falha: arquivo nao encontrado apos download')
+            self._text_response(500, 'arquivo nao encontrado apos download')
             return
 
         file_size = os.path.getsize(cache_file)
@@ -201,8 +437,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         if range_header:
             try:
-                range_val = range_header.replace('bytes=', '')
-                parts = range_val.split('-')
+                rv = range_header.replace('bytes=', '')
+                parts = rv.split('-')
                 start = int(parts[0]) if parts[0] else 0
                 end = int(parts[1]) if parts[1] else file_size - 1
             except Exception:
@@ -242,5 +478,6 @@ if __name__ == '__main__':
     with ReusableTCPServer((HOST, PORT), Handler) as httpd:
         log.info('servidor em http://%s:%d', HOST, PORT)
         log.info('cache: %s', CACHE_DIR)
+        log.info('dados: %s', DATA_DIR)
         log.info('cookies: %s', 'configurado' if COOKIES_PATH else 'ausente')
         httpd.serve_forever()
