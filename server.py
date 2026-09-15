@@ -20,7 +20,7 @@ HOST = os.environ.get('HOST', '0.0.0.0')
 PORT = int(os.environ.get('PORT', '8000'))
 CACHE_DIR = os.environ.get('CACHE_DIR', os.path.join(tempfile.gettempdir(), 'music_cache'))
 COOKIES_ENV = os.environ.get('COOKIES', '')
-PROXY_URL = os.environ.get('IPLOOP_PROXY', '')
+PROXY_URL = os.environ.get('WEBSHARE_PROXY', '') or os.environ.get('IPLOOP_PROXY', '')
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
@@ -66,11 +66,13 @@ DENO_CANDIDATES = [
     '/usr/bin/deno',
 ]
 
+
 def find_deno():
     for path in DENO_CANDIDATES:
         if os.path.isfile(path) and os.access(path, os.X_OK):
             return path
     return shutil.which('deno')
+
 
 DENO_PATH = find_deno()
 if DENO_PATH:
@@ -79,13 +81,14 @@ else:
     log.warning('deno NAO encontrado')
 
 if PROXY_URL:
-    log.info('proxy configurado: %s', PROXY_URL.split('@')[0] + '@...')
+    log.info('proxy configurado: %s', PROXY_URL)
 else:
-    log.warning('proxy NAO configurado — YouTube vai bloquear')
+    log.warning('proxy NAO configurado')
 
 YT_CLIENTS = 'web_embedded,tv,ios,mweb,web_safari'
 SESSION_DAYS = 30
 DEFAULT_PLAYLIST = 'Favoritas'
+
 
 def load_users():
     if not os.path.exists(USERS_FILE):
@@ -96,11 +99,13 @@ def load_users():
     except Exception:
         return {}
 
+
 def save_users(users):
     tmp = USERS_FILE + '.tmp'
     with open(tmp, 'w') as f:
         json.dump(users, f, indent=2)
     os.replace(tmp, USERS_FILE)
+
 
 def hash_password(password, salt=None):
     if salt is None:
@@ -108,9 +113,11 @@ def hash_password(password, salt=None):
     h = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt.encode('utf-8'), 120000)
     return salt, h.hex()
 
+
 def check_password(password, salt, stored_hash):
     _, h = hash_password(password, salt)
     return hmac.compare_digest(h, stored_hash)
+
 
 def make_token(username):
     expires = int(time.time()) + SESSION_DAYS * 86400
@@ -118,6 +125,7 @@ def make_token(username):
     sig = hmac.new(SECRET_KEY, payload.encode(), hashlib.sha256).hexdigest()
     raw = f'{payload}:{sig}'
     return base64.urlsafe_b64encode(raw.encode()).decode()
+
 
 def verify_token(token):
     try:
@@ -133,6 +141,7 @@ def verify_token(token):
     except Exception:
         return None
 
+
 def get_username_from_request(handler):
     cookie_header = handler.headers.get('Cookie', '')
     if not cookie_header:
@@ -146,6 +155,7 @@ def get_username_from_request(handler):
         return None
     return verify_token(cookies['session'].value)
 
+
 def valid_username(u):
     if not u or not isinstance(u, str):
         return False
@@ -153,15 +163,18 @@ def valid_username(u):
         return False
     return all(c.isalnum() or c in '-_.' for c in u)
 
+
 def playlist_path(username):
     safe = ''.join(c for c in username if c.isalnum() or c in '-_.')
     return os.path.join(PLAYLIST_DIR, safe + '.json')
+
 
 def _new_structure(tracks=None):
     return {
         'playlists': {DEFAULT_PLAYLIST: tracks or []},
         'active': DEFAULT_PLAYLIST
     }
+
 
 def load_playlists(username):
     path = playlist_path(username)
@@ -189,12 +202,14 @@ def load_playlists(username):
 
     return {'playlists': playlists, 'active': active}
 
+
 def save_playlists(username, data):
     path = playlist_path(username)
     tmp = path + '.tmp'
     with open(tmp, 'w') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
     os.replace(tmp, path)
+
 
 def sanitize_track(t):
     if not isinstance(t, dict):
@@ -208,6 +223,7 @@ def sanitize_track(t):
         'author': str(t.get('author', ''))[:200],
         'thumb': str(t.get('thumb', ''))[:500],
     }
+
 
 def sanitize_playlists_payload(data):
     if not isinstance(data, dict):
@@ -240,6 +256,7 @@ def sanitize_playlists_payload(data):
         active = next(iter(clean))
 
     return {'playlists': clean, 'active': active}
+
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def _cors(self):
@@ -290,6 +307,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._text_response(200, 'ok')
             return
 
+        if parsed.path == '/myip':
+            try:
+                r = subprocess.run(
+                    ['curl', '-s', 'https://api.ipify.org'],
+                    capture_output=True, text=True, timeout=15
+                )
+                ip = (r.stdout or '').strip() or 'erro ao obter IP'
+            except Exception as e:
+                ip = 'erro: ' + str(e)
+            self._text_response(200, ip)
+            return
+
         if parsed.path == '/api/me':
             username = get_username_from_request(self)
             if username:
@@ -325,7 +354,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             cmd.append('https://www.youtube.com/watch?v=' + video_id)
             try:
                 r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                out = '=== STDOUT ===\n' + (r.stdout or '') + '\n\n=== STDERR ===\n' + (r.stderr or '')
+                out = (
+                    '=== PROXY ===\n' + (PROXY_URL or '(ausente)') + '\n\n'
+                    '=== STDOUT ===\n' + (r.stdout or '') +
+                    '\n\n=== STDERR ===\n' + (r.stderr or '')
+                )
             except Exception as e:
                 out = 'erro: ' + str(e)
             self._text_response(200, out)
@@ -500,9 +533,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
+
 class ReusableTCPServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
+
 
 if __name__ == '__main__':
     with ReusableTCPServer((HOST, PORT), Handler) as httpd:
@@ -510,5 +545,5 @@ if __name__ == '__main__':
         log.info('cache: %s', CACHE_DIR)
         log.info('dados: %s', DATA_DIR)
         log.info('cookies: %s', 'configurado' if COOKIES_PATH else 'ausente')
-        log.info('proxy: %s', 'configurado' if PROXY_URL else 'ausente')
+        log.info('proxy: %s', PROXY_URL if PROXY_URL else 'ausente')
         httpd.serve_forever()
