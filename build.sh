@@ -57,8 +57,7 @@ echo "==> Limpando lock e node_modules"
 rm -rf node_modules package-lock.json
 
 echo "==> npm install"
-npm install --no-audit --no-fund
-
+npm install --no-audit --no-fund --legacy-peer-deps
 echo "==> Verificando versoes instaladas"
 npm ls jsdom || true
 npm ls html-encoding-sniffer || true
