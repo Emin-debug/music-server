@@ -18,6 +18,11 @@ import atexit
 from urllib.parse import urlparse
 from http.cookies import SimpleCookie
 
+# Adiciona Node portatil ao PATH antes de tudo
+_NODE_DIR = '/opt/render/project/node/bin'
+if os.path.isdir(_NODE_DIR) and _NODE_DIR not in os.environ.get('PATH', ''):
+    os.environ['PATH'] = _NODE_DIR + ':' + os.environ.get('PATH', '')
+
 HOST = os.environ.get('HOST', '0.0.0.0')
 PORT = int(os.environ.get('PORT', '8000'))
 CACHE_DIR = os.environ.get('CACHE_DIR', os.path.join(tempfile.gettempdir(), 'music_cache'))
