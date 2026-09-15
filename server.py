@@ -85,7 +85,8 @@ if PROXY_URL:
 else:
     log.warning('proxy NAO configurado')
 
-YT_CLIENTS = 'web_embedded,tv,ios,mweb,web_safari'
+YT_CLIENTS = 'tv,web_safari,web_embedded'
+YT_EXTRACTOR_ARGS = 'youtube:player_client=' + YT_CLIENTS + ';player_skip=webpage,configs'
 SESSION_DAYS = 30
 DEFAULT_PLAYLIST = 'Favoritas'
 
@@ -343,7 +344,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
             cmd = [
                 'yt-dlp', '--list-formats', '--no-warnings',
-                '--extractor-args', 'youtube:player_client=' + YT_CLIENTS,
+                '--extractor-args', YT_EXTRACTOR_ARGS,
             ]
             if DENO_PATH:
                 cmd.extend(['--js-runtimes', 'deno:' + DENO_PATH])
@@ -356,6 +357,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
                 out = (
                     '=== PROXY ===\n' + (PROXY_URL or '(ausente)') + '\n\n'
+                    '=== EXTRACTOR ARGS ===\n' + YT_EXTRACTOR_ARGS + '\n\n'
                     '=== STDOUT ===\n' + (r.stdout or '') +
                     '\n\n=== STDERR ===\n' + (r.stderr or '')
                 )
@@ -470,7 +472,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 'yt-dlp', '-f', 'bestaudio/best',
                 '-o', cache_base + '.%(ext)s',
                 '--no-playlist', '--no-warnings',
-                '--extractor-args', 'youtube:player_client=' + YT_CLIENTS,
+                '--extractor-args', YT_EXTRACTOR_ARGS,
             ]
             if DENO_PATH:
                 cmd.extend(['--js-runtimes', 'deno:' + DENO_PATH])
@@ -546,4 +548,5 @@ if __name__ == '__main__':
         log.info('dados: %s', DATA_DIR)
         log.info('cookies: %s', 'configurado' if COOKIES_PATH else 'ausente')
         log.info('proxy: %s', PROXY_URL if PROXY_URL else 'ausente')
+        log.info('extractor args: %s', YT_EXTRACTOR_ARGS)
         httpd.serve_forever()
