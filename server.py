@@ -36,7 +36,7 @@ PLAYLIST_DIR = os.path.join(DATA_DIR, 'playlists')
 SECRET_FILE = os.path.join(DATA_DIR, 'secret.key')
 POT_SERVER_DIR = os.path.join(BASE_DIR, 'bgutil-ytdlp-pot-provider', 'server')
 POT_MAIN = os.path.join(POT_SERVER_DIR, 'build', 'main.js')
-POT_URL = 'http://127.0.0.1:4416'
+POT_URL = os.environ.get('POT_URL', 'http://127.0.0.1:4416')
 POT_STDOUT_LOG = '/tmp/pot_stdout.log'
 POT_STDERR_LOG = '/tmp/pot_stderr.log'
 
