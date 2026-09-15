@@ -31,7 +31,6 @@ EXT_TYPES = [
     ('.mp3', 'audio/mpeg'),
 ]
 
-# Onde o Deno pode estar. Procuramos em ordem.
 DENO_CANDIDATES = [
     '/opt/render/project/.deno/bin/deno',
     os.path.expanduser('~/.deno/bin/deno'),
@@ -41,12 +40,10 @@ DENO_CANDIDATES = [
 
 
 def find_deno():
-    """Retorna o caminho absoluto do Deno, ou None."""
     for path in DENO_CANDIDATES:
         if os.path.isfile(path) and os.access(path, os.X_OK):
             return path
-    which = shutil.which('deno')
-    return which
+    return shutil.which('deno')
 
 
 DENO_PATH = find_deno()
@@ -55,7 +52,6 @@ if DENO_PATH:
 else:
     log.warning('deno NAO encontrado. yt-dlp vai falhar sem runtime JS.')
 
-# Clientes que funcionam sem PO Token.
 YT_CLIENTS = 'web_embedded,tv,ios,mweb,web_safari'
 
 
@@ -79,6 +75,47 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._cors()
             self.end_headers()
             self.wfile.write(b'ok')
+            return
+
+        if parsed.path.startswith('/debug/'):
+            video_id = parsed.path.split('/debug/')[-1]
+            video_id = ''.join(c for c in video_id if c.isalnum() or c in '-_')
+            if not video_id:
+                self.send_response(400)
+                self._cors()
+                self.end_headers()
+                return
+
+            cmd = [
+                'yt-dlp',
+                '--list-formats',
+                '--no-warnings',
+                '--extractor-args', 'youtube:player_client=' + YT_CLIENTS,
+            ]
+            if DENO_PATH:
+                cmd.extend(['--js-runtimes', 'deno:' + DENO_PATH])
+            if COOKIES_PATH:
+                cmd.extend(['--cookies', COOKIES_PATH])
+            cmd.append('https://www.youtube.com/watch?v=' + video_id)
+
+            log.info('debug list-formats %s', video_id)
+            try:
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                out = (
+                    '=== COMMAND ===\n' + ' '.join(cmd) + '\n\n'
+                    '=== DENO ===\n' + (DENO_PATH or 'nao encontrado') + '\n\n'
+                    '=== COOKIES ===\n' + ('configurado' if COOKIES_PATH else 'ausente') + '\n\n'
+                    '=== STDOUT ===\n' + (r.stdout or '(vazio)') + '\n\n'
+                    '=== STDERR ===\n' + (r.stderr or '(vazio)') + '\n'
+                )
+            except Exception as e:
+                out = 'erro: ' + str(e)
+
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self._cors()
+            self.end_headers()
+            self.wfile.write(out.encode())
             return
 
         if parsed.path.startswith('/audio/'):
@@ -117,14 +154,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 '--no-warnings',
                 '--extractor-args', 'youtube:player_client=' + YT_CLIENTS,
             ]
-
-            # Aponta o Deno com caminho absoluto — nao depende do PATH
             if DENO_PATH:
                 cmd.extend(['--js-runtimes', 'deno:' + DENO_PATH])
-
             if COOKIES_PATH:
                 cmd.extend(['--cookies', COOKIES_PATH])
-
             cmd.append('https://www.youtube.com/watch?v=' + video_id)
 
             try:
@@ -136,13 +169,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     text=True
                 )
                 log.info('baixado %s', video_id)
-                if result.stdout:
-                    log.info('yt-dlp stdout: %s', result.stdout[-300:])
             except subprocess.CalledProcessError as e:
                 err = e.stderr[-800:] if e.stderr else str(e)
                 log.error('yt-dlp falhou: %s', err)
                 self.send_response(500)
-                self.send_header('Content-Type', 'text/plain')
+                self.send_header('Content-Type', 'text/plain; charset=utf-8')
                 self._cors()
                 self.end_headers()
                 self.wfile.write(('Falha: ' + err).encode())
