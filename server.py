@@ -21,7 +21,6 @@ PORT = int(os.environ.get('PORT', '8000'))
 CACHE_DIR = os.environ.get('CACHE_DIR', os.path.join(tempfile.gettempdir(), 'music_cache'))
 COOKIES_ENV = os.environ.get('COOKIES', '')
 
-# Pasta de dados persistentes (usuarios, playlists, secret)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 USERS_FILE = os.path.join(DATA_DIR, 'users.json')
@@ -32,10 +31,8 @@ os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(PLAYLIST_DIR, exist_ok=True)
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-# Lock para operacoes em users.json
 users_lock = threading.Lock()
 
-# Chave HMAC persistente
 if os.path.exists(SECRET_FILE):
     with open(SECRET_FILE, 'rb') as f:
         SECRET_KEY = f.read()
@@ -84,11 +81,9 @@ else:
 
 YT_CLIENTS = 'web_embedded,tv,ios,mweb,web_safari'
 SESSION_DAYS = 30
+DEFAULT_PLAYLIST = 'Favoritas'
 
 
-# ============================================================
-#  Helpers de usuario e sessao
-# ============================================================
 def load_users():
     if not os.path.exists(USERS_FILE):
         return {}
@@ -168,18 +163,42 @@ def playlist_path(username):
     return os.path.join(PLAYLIST_DIR, safe + '.json')
 
 
-def load_playlist(username):
+def _new_structure(tracks=None):
+    return {
+        'playlists': {DEFAULT_PLAYLIST: tracks or []},
+        'active': DEFAULT_PLAYLIST
+    }
+
+
+def load_playlists(username):
     path = playlist_path(username)
     if not os.path.exists(path):
-        return []
+        return _new_structure()
     try:
         with open(path, 'r') as f:
-            return json.load(f)
+            data = json.load(f)
     except Exception:
-        return []
+        return _new_structure()
+
+    # Migração: formato antigo (lista pura) → estrutura nova
+    if isinstance(data, list):
+        return _new_structure(data)
+
+    if not isinstance(data, dict) or 'playlists' not in data:
+        return _new_structure()
+
+    playlists = data.get('playlists') or {}
+    if not isinstance(playlists, dict) or not playlists:
+        return _new_structure()
+
+    active = data.get('active', '')
+    if active not in playlists:
+        active = next(iter(playlists))
+
+    return {'playlists': playlists, 'active': active}
 
 
-def save_playlist(username, data):
+def save_playlists(username, data):
     path = playlist_path(username)
     tmp = path + '.tmp'
     with open(tmp, 'w') as f:
@@ -187,9 +206,53 @@ def save_playlist(username, data):
     os.replace(tmp, path)
 
 
-# ============================================================
-#  Handler
-# ============================================================
+def sanitize_track(t):
+    if not isinstance(t, dict):
+        return None
+    vid = t.get('id', '')
+    if not isinstance(vid, str) or len(vid) != 11:
+        return None
+    return {
+        'id': vid,
+        'title': str(t.get('title', ''))[:300],
+        'author': str(t.get('author', ''))[:200],
+        'thumb': str(t.get('thumb', ''))[:500],
+    }
+
+
+def sanitize_playlists_payload(data):
+    if not isinstance(data, dict):
+        return None
+    playlists = data.get('playlists')
+    if not isinstance(playlists, dict):
+        return None
+
+    clean = {}
+    for name, tracks in playlists.items():
+        if not isinstance(name, str):
+            continue
+        name = name.strip()[:60]
+        if not name:
+            continue
+        if not isinstance(tracks, list):
+            continue
+        clean_tracks = []
+        for t in tracks:
+            st = sanitize_track(t)
+            if st:
+                clean_tracks.append(st)
+        clean[name] = clean_tracks
+
+    if not clean:
+        clean = {DEFAULT_PLAYLIST: []}
+
+    active = data.get('active', '')
+    if active not in clean:
+        active = next(iter(clean))
+
+    return {'playlists': clean, 'active': active}
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     def _cors(self):
         self.send_header('Access-Control-Allow-Origin', '*')
@@ -232,7 +295,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self._cors()
         self.end_headers()
 
-    # -------------------- GET --------------------
     def do_GET(self):
         parsed = urlparse(self.path)
 
@@ -253,7 +315,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not username:
                 self._json_response(401, {'error': 'nao autenticado'})
                 return
-            self._json_response(200, {'playlist': load_playlist(username)})
+            self._json_response(200, load_playlists(username))
             return
 
         if parsed.path.startswith('/debug/'):
@@ -273,10 +335,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             cmd.append('https://www.youtube.com/watch?v=' + video_id)
             try:
                 r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                out = (
-                    '=== STDOUT ===\n' + (r.stdout or '') +
-                    '\n\n=== STDERR ===\n' + (r.stderr or '')
-                )
+                out = '=== STDOUT ===\n' + (r.stdout or '') + '\n\n=== STDERR ===\n' + (r.stderr or '')
             except Exception as e:
                 out = 'erro: ' + str(e)
             self._text_response(200, out)
@@ -289,7 +348,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         super().do_GET()
 
-    # -------------------- POST --------------------
     def do_POST(self):
         parsed = urlparse(self.path)
 
@@ -316,6 +374,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 users[username] = {'salt': salt, 'hash': h, 'created': int(time.time())}
                 save_users(users)
 
+            save_playlists(username, _new_structure())
             token = make_token(username)
             cookie = f'session={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_DAYS*86400}'
             self._json_response(200, {'username': username}, extra_headers={'Set-Cookie': cookie})
@@ -353,34 +412,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._json_response(401, {'error': 'nao autenticado'})
                 return
             data = self._read_json_body()
-            if data is None or 'playlist' not in data:
+            if data is None:
                 self._json_response(400, {'error': 'payload invalido'})
                 return
-            playlist = data['playlist']
-            if not isinstance(playlist, list):
-                self._json_response(400, {'error': 'playlist deve ser lista'})
+            clean = sanitize_playlists_payload(data)
+            if clean is None:
+                self._json_response(400, {'error': 'estrutura invalida'})
                 return
-            # sanitiza
-            clean = []
-            for t in playlist:
-                if not isinstance(t, dict):
-                    continue
-                vid = t.get('id', '')
-                if not isinstance(vid, str) or len(vid) != 11:
-                    continue
-                clean.append({
-                    'id': vid,
-                    'title': str(t.get('title', ''))[:300],
-                    'author': str(t.get('author', ''))[:200],
-                    'thumb': str(t.get('thumb', ''))[:500],
-                })
-            save_playlist(username, clean)
-            self._json_response(200, {'ok': True, 'count': len(clean)})
+            save_playlists(username, clean)
+            self._json_response(200, {'ok': True})
             return
 
         self._json_response(404, {'error': 'endpoint nao encontrado'})
 
-    # -------------------- audio --------------------
     def _find_cached(self, base):
         for ext, ct in EXT_TYPES:
             candidate = base + ext
@@ -400,11 +444,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not cache_file:
             log.info('baixando %s', video_id)
             cmd = [
-                'yt-dlp',
-                '-f', 'bestaudio/best',
+                'yt-dlp', '-f', 'bestaudio/best',
                 '-o', cache_base + '.%(ext)s',
-                '--no-playlist',
-                '--no-warnings',
+                '--no-playlist', '--no-warnings',
                 '--extractor-args', 'youtube:player_client=' + YT_CLIENTS,
             ]
             if DENO_PATH:
@@ -412,7 +454,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if COOKIES_PATH:
                 cmd.extend(['--cookies', COOKIES_PATH])
             cmd.append('https://www.youtube.com/watch?v=' + video_id)
-
             try:
                 subprocess.run(cmd, check=True, timeout=300, capture_output=True, text=True)
                 log.info('baixado %s', video_id)
@@ -425,7 +466,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 log.error('erro inesperado: %s', e)
                 self._text_response(500, 'erro interno')
                 return
-
             cache_file, content_type = self._find_cached(cache_base)
 
         if not cache_file:
