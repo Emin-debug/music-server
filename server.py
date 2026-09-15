@@ -13,6 +13,8 @@ import secrets
 import base64
 import time
 import threading
+import signal
+import atexit
 from urllib.parse import urlparse
 from http.cookies import SimpleCookie
 
@@ -27,6 +29,9 @@ DATA_DIR = os.path.join(BASE_DIR, 'data')
 USERS_FILE = os.path.join(DATA_DIR, 'users.json')
 PLAYLIST_DIR = os.path.join(DATA_DIR, 'playlists')
 SECRET_FILE = os.path.join(DATA_DIR, 'secret.key')
+POT_SERVER_DIR = os.path.join(BASE_DIR, 'bgutil-ytdlp-pot-provider', 'server')
+POT_MAIN = os.path.join(POT_SERVER_DIR, 'build', 'main.js')
+POT_URL = 'http://127.0.0.1:4416'
 
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(PLAYLIST_DIR, exist_ok=True)
@@ -86,9 +91,51 @@ else:
     log.warning('proxy NAO configurado')
 
 YT_CLIENTS = 'tv,web_safari,web_embedded'
-YT_EXTRACTOR_ARGS = 'youtube:player_client=' + YT_CLIENTS + ';player_skip=webpage,configs'
+YT_EXTRACTOR_ARGS = (
+    'youtube:player_client=' + YT_CLIENTS +
+    ';player_skip=webpage,configs' +
+    ';youtubepot-bgutilhttp:base_url=' + POT_URL
+)
 SESSION_DAYS = 30
 DEFAULT_PLAYLIST = 'Favoritas'
+
+POT_PROCESS = None
+
+
+def start_pot_server():
+    global POT_PROCESS
+    if not os.path.isfile(POT_MAIN):
+        log.warning('PO Token Provider nao encontrado em %s', POT_MAIN)
+        return
+    try:
+        POT_PROCESS = subprocess.Popen(
+            ['node', POT_MAIN],
+            cwd=POT_SERVER_DIR,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        log.info('PO Token Provider iniciado (pid=%d)', POT_PROCESS.pid)
+        time.sleep(3)
+    except Exception as e:
+        log.error('falha ao iniciar PO Token Provider: %s', e)
+        POT_PROCESS = None
+
+
+def stop_pot_server():
+    global POT_PROCESS
+    if POT_PROCESS and POT_PROCESS.poll() is None:
+        try:
+            POT_PROCESS.terminate()
+            POT_PROCESS.wait(timeout=5)
+        except Exception:
+            try:
+                POT_PROCESS.kill()
+            except Exception:
+                pass
+        log.info('PO Token Provider encerrado')
+
+
+atexit.register(stop_pot_server)
 
 
 def load_users():
@@ -320,6 +367,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._text_response(200, ip)
             return
 
+        if parsed.path == '/potstatus':
+            status = 'inativo'
+            if POT_PROCESS and POT_PROCESS.poll() is None:
+                status = 'ativo (pid=%d)' % POT_PROCESS.pid
+            elif POT_PROCESS:
+                status = 'morto (exit=%s)' % POT_PROCESS.returncode
+            info = (
+                'PO Token Provider: ' + status + '\n'
+                'POT_MAIN: ' + POT_MAIN + '\n'
+                'existe: ' + ('sim' if os.path.isfile(POT_MAIN) else 'nao') + '\n'
+                'POT_URL: ' + POT_URL + '\n'
+            )
+            self._text_response(200, info)
+            return
+
         if parsed.path == '/api/me':
             username = get_username_from_request(self)
             if username:
@@ -358,6 +420,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 out = (
                     '=== PROXY ===\n' + (PROXY_URL or '(ausente)') + '\n\n'
                     '=== EXTRACTOR ARGS ===\n' + YT_EXTRACTOR_ARGS + '\n\n'
+                    '=== POT STATUS ===\n' + (
+                        'ativo' if POT_PROCESS and POT_PROCESS.poll() is None
+                        else 'inativo'
+                    ) + '\n\n'
                     '=== STDOUT ===\n' + (r.stdout or '') +
                     '\n\n=== STDERR ===\n' + (r.stderr or '')
                 )
@@ -541,7 +607,18 @@ class ReusableTCPServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
 
 
+def handle_sigterm(signum, frame):
+    stop_pot_server()
+    raise SystemExit(0)
+
+
 if __name__ == '__main__':
+    signal.signal(signal.SIGTERM, handle_sigterm)
+    signal.signal(signal.SIGINT, handle_sigterm)
+
+    log.info('iniciando PO Token Provider...')
+    start_pot_server()
+
     with ReusableTCPServer((HOST, PORT), Handler) as httpd:
         log.info('servidor em http://%s:%d', HOST, PORT)
         log.info('cache: %s', CACHE_DIR)
@@ -549,4 +626,5 @@ if __name__ == '__main__':
         log.info('cookies: %s', 'configurado' if COOKIES_PATH else 'ausente')
         log.info('proxy: %s', PROXY_URL if PROXY_URL else 'ausente')
         log.info('extractor args: %s', YT_EXTRACTOR_ARGS)
+        log.info('pot main: %s (%s)', POT_MAIN, 'ok' if os.path.isfile(POT_MAIN) else 'ausente')
         httpd.serve_forever()
