@@ -40,7 +40,7 @@ git clone --depth 1 --branch 1.3.1 https://github.com/Brainicism/bgutil-ytdlp-po
 
 cd bgutil-ytdlp-pot-provider/server/
 
-echo "==> Ajustando jsdom para 24.1.3"
+echo "==> Ajustando jsdom para 24.1.3 e removendo canvas"
 node <<'EOF'
 const fs = require('fs');
 const path = 'package.json';
@@ -53,17 +53,31 @@ if (pkg.dependencies && pkg.dependencies.jsdom) {
 if (pkg.devDependencies && pkg.devDependencies.jsdom) {
     pkg.devDependencies.jsdom = '24.1.3';
 }
+
+// Remove canvas — nao precisamos de renderizacao de canvas pra gerar PO token
+if (pkg.dependencies && pkg.dependencies.canvas) {
+    console.log('canvas antes:', pkg.dependencies.canvas);
+    delete pkg.dependencies.canvas;
+}
+if (pkg.devDependencies && pkg.devDependencies.canvas) {
+    delete pkg.devDependencies.canvas;
+}
+if (pkg.optionalDependencies && pkg.optionalDependencies.canvas) {
+    delete pkg.optionalDependencies.canvas;
+}
+
 delete pkg.overrides;
 
 fs.writeFileSync(path, JSON.stringify(pkg, null, 2));
 console.log('jsdom depois:', (pkg.dependencies && pkg.dependencies.jsdom) || '(nao estava em deps)');
+console.log('canvas depois:', (pkg.dependencies && pkg.dependencies.canvas) || '(removido)');
 EOF
 
 echo "==> Limpando lock e node_modules"
 rm -rf node_modules package-lock.json
 
 echo "==> npm install"
-npm install --no-audit --no-fund
+npm install --no-audit --no-fund --legacy-peer-deps
 
 echo "==> Versoes instaladas"
 npm ls jsdom || true
